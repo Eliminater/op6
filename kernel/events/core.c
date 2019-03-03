@@ -4289,7 +4289,7 @@ static DEFINE_SPINLOCK(zombie_list_lock);
  * object, it will not preserve its functionality. Once the last 'user'
  * gives up the object, we'll destroy the thing.
  */
-int perf_event_release_kernel(struct perf_event *event)
+static int perf_event_release(struct perf_event *event)
 {
 	struct perf_event_context *ctx = event->ctx;
 	struct perf_event *child, *tmp;
@@ -4415,6 +4415,14 @@ again:
 
 no_ctx:
 	put_event(event); /* Must be the 'last' reference */
+	return 0;
+}
+
+int perf_event_release_kernel(struct perf_event *event)
+{
+	get_online_cpus();
+	perf_event_release(event);
+	put_online_cpus();
 	return 0;
 }
 EXPORT_SYMBOL_GPL(perf_event_release_kernel);
@@ -4730,6 +4738,11 @@ static void __perf_event_period(struct perf_event *event,
 	}
 }
 
+static int perf_event_check_period(struct perf_event *event, u64 value)
+{
+	return event->pmu->check_period(event, value);
+}
+
 static int perf_event_period(struct perf_event *event, u64 __user *arg)
 {
 	u64 value;
@@ -4744,6 +4757,9 @@ static int perf_event_period(struct perf_event *event, u64 __user *arg)
 		return -EINVAL;
 
 	if (event->attr.freq && value > sysctl_perf_event_sample_rate)
+		return -EINVAL;
+
+	if (perf_event_check_period(event, value))
 		return -EINVAL;
 
 	event_function_call(event, __perf_event_period, &value);
@@ -8756,6 +8772,11 @@ static int perf_pmu_nop_int(struct pmu *pmu)
 	return 0;
 }
 
+static int perf_event_nop_int(struct perf_event *event, u64 value)
+{
+	return 0;
+}
+
 static DEFINE_PER_CPU(unsigned int, nop_txn_flags);
 
 static void perf_pmu_start_txn(struct pmu *pmu, unsigned int flags)
@@ -9077,6 +9098,9 @@ got_cpu_context:
 		pmu->pmu_enable  = perf_pmu_nop_void;
 		pmu->pmu_disable = perf_pmu_nop_void;
 	}
+
+	if (!pmu->check_period)
+		pmu->check_period = perf_event_nop_int;
 
 	if (!pmu->event_idx)
 		pmu->event_idx = perf_event_idx_default;
@@ -11141,7 +11165,7 @@ static void perf_event_zombie_cleanup(unsigned int cpu)
 		 * PMU expects it to be in an active state
 		 */
 		event->state = PERF_EVENT_STATE_ACTIVE;
-		perf_event_release_kernel(event);
+		perf_event_release(event);
 
 		spin_lock(&zombie_list_lock);
 	}

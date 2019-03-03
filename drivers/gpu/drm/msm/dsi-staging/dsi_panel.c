@@ -25,6 +25,12 @@
 #include <linux/project_info.h>
 #include <linux/pm_wakeup.h>
 #include "../sde/sde_trace.h"
+#include "exposure_adjustment.h"
+
+#ifdef CONFIG_KLAPSE
+#include "../sde/klapse.h"
+#endif
+
 /**
  * topology is currently defined by a set of following 3 values:
  * 1. num of layer mixers
@@ -568,6 +574,19 @@ static int dsi_panel_tx_cmd_set(struct dsi_panel *panel,
 	if (panel->type == EXT_BRIDGE)
 		return 0;
 
+#ifdef CONFIG_EXPOSURE_ADJUSTMENT
+	if (ea_panel_on()){
+		if (type == DSI_CMD_SET_SRGB_ON ||
+			type == DSI_CMD_SET_DCI_P3_ON ||
+			type == DSI_CMD_SET_ONEPLUS_MODE_ON)
+			ea_panel_mode_ctrl(panel, true);
+		else if ((type > DSI_CMD_SET_POST_TIMING_SWITCH &&
+			type < DSI_CMD_SET_PANEL_SERIAL_NUMBER) ||
+			type > DSI_CMD_READ_SAMSUNG_PANEL_REGISTER_OFF ||
+			type < DSI_CMD_SET_CMD_TO_VID_SWITCH)
+			ea_panel_mode_ctrl(panel, false);
+	}
+#endif
 	mode = panel->cur_mode;
 
 	cmds = mode->priv_info->cmd_sets[type].cmds;
@@ -728,6 +747,10 @@ int dsi_panel_set_backlight(struct dsi_panel *panel, u32 bl_lvl)
 
 	if (panel->type == EXT_BRIDGE)
 		return 0;
+#ifdef CONFIG_EXPOSURE_ADJUSTMENT
+	if (ea_panel_on())
+		bl_lvl = ea_panel_calc_backlight(bl_lvl);
+#endif
 
 	pr_debug("backlight type:%d lvl:%d\n", bl->type, bl_lvl);
 	switch (bl->type) {
@@ -742,6 +765,10 @@ int dsi_panel_set_backlight(struct dsi_panel *panel, u32 bl_lvl)
 		pr_err("Backlight type(%d) not supported\n", bl->type);
 		rc = -ENOTSUPP;
 	}
+	
+#ifdef CONFIG_KLAPSE
+	set_rgb_slider(bl_lvl);
+#endif
 
 	return rc;
 }
@@ -1906,9 +1933,7 @@ error:
 static int dsi_panel_parse_misc_features(struct dsi_panel *panel,
 				     struct device_node *of_node)
 {
-	panel->ulps_enabled =
-		of_property_read_bool(of_node, "qcom,ulps-enabled");
-
+	panel->ulps_enabled = true;
 	pr_info("%s: ulps feature %s\n", __func__,
 		(panel->ulps_enabled ? "enabled" : "disabled"));
 
@@ -1924,8 +1949,8 @@ static int dsi_panel_parse_misc_features(struct dsi_panel *panel,
 	panel->sync_broadcast_en = of_property_read_bool(of_node,
 			"qcom,cmd-sync-wait-broadcast");
 
-	panel->lp11_init = of_property_read_bool(of_node,
-			"qcom,mdss-dsi-lp11-init");
+	panel->lp11_init = false;
+
 	return 0;
 }
 
@@ -3898,6 +3923,9 @@ int dsi_panel_enable(struct dsi_panel *panel)
 	mutex_lock(&panel->panel_lock);
 	printk(KERN_ERR"Send DSI_CMD_SET_ON\n");
 	rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_ON);
+	if(panel->aod_mode!=2){
+		rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_POST_ON);
+		}
 	if (rc) {
 		pr_err("[%s] failed to send DSI_CMD_SET_ON cmds, rc=%d\n",
 		       panel->name, rc);
@@ -3940,6 +3968,7 @@ int dsi_panel_enable(struct dsi_panel *panel)
 int dsi_panel_post_enable(struct dsi_panel *panel)
 {
 	int rc = 0;
+	return 0;
 
 	if (!panel) {
 		pr_err("invalid params\n");
@@ -4450,6 +4479,7 @@ int dsi_panel_set_adaption_mode(struct dsi_panel *panel, int level)
 return rc;
 }
 bool aod_real_flag = false;
+bool aod_complete = false;
 int dsi_panel_set_aod_mode(struct dsi_panel *panel, int level)
 {
 	int rc = 0;
@@ -4477,6 +4507,7 @@ int dsi_panel_set_aod_mode(struct dsi_panel *panel, int level)
 			printk(KERN_ERR"send AOD ON commd mode 2 start \n");
             rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_AOD_ON_2);
 			aod_real_flag=false;
+			aod_complete=true;
 			printk(KERN_ERR"send AOD ON commd mode 2 end   \n");
            
         }
@@ -4500,9 +4531,9 @@ int dsi_panel_set_aod_mode(struct dsi_panel *panel, int level)
 		    if (panel->adaption_mode)
 		        dsi_panel_set_adaption_mode(panel, panel->adaption_mode);
 			   rc= dsi_panel_update_backlight(panel,panel->bl_config.bl_level);
-                                }
+				}
               printk(KERN_ERR"send AOD OFF commd end \n");
-                
+              aod_complete = false;
             }
         }
     panel->aod_curr_mode = level;

@@ -43,6 +43,9 @@ static LIST_HEAD(devfreq_governor_list);
 static LIST_HEAD(devfreq_list);
 static DEFINE_MUTEX(devfreq_list_lock);
 
+/* Lets Make Sure We Boot At a Safe Freq */
+#define GPU_MAX_BOOT_FREQ 710000000;
+
 /**
  * find_device_devfreq() - find devfreq struct using device pointer
  * @dev:	device pointer used to lookup device devfreq.
@@ -89,7 +92,7 @@ static void devfreq_set_freq_limits(struct devfreq *devfreq)
 	}
 
 	devfreq->min_freq = min;
-	devfreq->max_freq = max;
+	devfreq->max_freq = GPU_MAX_BOOT_FREQ;
 }
 
 /**
@@ -265,7 +268,7 @@ int update_devfreq(struct devfreq *devfreq)
 		return -EINVAL;
 
 	/* Reevaluate the proper frequency */
-	err = devfreq->governor->get_target_freq(devfreq, &freq);
+	err = devfreq->governor->get_target_freq(devfreq, &freq, &flags);
 	if (err)
 		return err;
 
@@ -1281,7 +1284,9 @@ static int __init devfreq_init(void)
 		return PTR_ERR(devfreq_class);
 	}
 
-	devfreq_wq = create_freezable_workqueue("devfreq_wq");
+	devfreq_wq = alloc_workqueue("devfreq_wq",
+			    WQ_HIGHPRI | WQ_UNBOUND | WQ_FREEZABLE |
+			    WQ_MEM_RECLAIM, 0);
 	if (!devfreq_wq) {
 		class_destroy(devfreq_class);
 		pr_err("%s: couldn't create workqueue\n", __FILE__);
